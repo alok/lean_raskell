@@ -1,222 +1,350 @@
--- This module serves as the root of the `LeanRaskell` library.
--- Import modules here that should be built as part of the library.
-import «LeanRaskell».Core
-#print inferInstance
+/-
+  This module serves as the root of the `LeanRaskell` library. Import modules here that should be built as part of the library.
+-/
+import LeanRaskell.Core
+import Std
 
-structure  Point (a:Type u) [Inhabited a] where
-  x : a := default
-  y : a := default
-  z : a := default
-deriving Repr
-structure RGBValue where
-  red : Nat := default
-  green : Nat := default
-  blue : Nat := default
-deriving Repr
-structure RedGreenPoint (a:Type) [Inhabited a] extends Point a, RGBValue where
-  no_blue : blue = 0 := by simp
-deriving Repr
--- FILEPATH: /Users/alokbeniwal/lean_raskell/LeanRaskell.lean
--- BEGIN: rgbpoint-inhabited-instance
+/--
+  A `Token` in a `Sequence` is a small integer.
+  RASP-L uses `UInt8` to ensure all maps of type `Token` -> `Token` are learnable.
+-/
+abbrev Token := UInt8
 
+instance : Coe Token Nat where
+  coe := UInt8.toNat
 
-instance [Inhabited a] : Inhabited (RedGreenPoint a) :=
-  ⟨{ x := default, y := default, z := default, red := default, green := default, blue := default ,no_blue:= by rfl}⟩
--- END: rgbpoint-inhabited-instance
+instance : CoeDep Nat n Token where
+  coe := UInt8.ofNat n
 
-def aaa:RedGreenPoint Int := {x := 1, y:=2,z:=3,red:=1,blue:=1-1+1-2,green:=3}
-#eval aaa
+def Token.min : Token := 0
+def Token.max : Token := 255
 
+@[inherit_doc List]
+abbrev Sequence := List Token
+abbrev Keys := List Token
+abbrev Values := List Token
+abbrev Queries := List Token
+abbrev BoolSequence := List Bool
+/-- Takes 2 tokens and decides their equality. -/
+abbrev Predicate := Token → Token → Bool
+/--
+  A `Selector` is a list of lists of booleans.
+  It represents a binary attention matrix used in the `selectCausal` function.
+-/
+abbrev Selector := List (List Bool)
 
-def Int8 := {n:Int // -128 ≤ n ∧ n < 128 }
-def Int8.min:Int8 := -128
-def Int8.max:Int8 := 127
--- instance : OfNat Int8 (n:Nat) (128>n ∧ n >=-128) :=
---   ⟨n, by decide⟩
-instance : OfNat Int8 127 :=
-  ⟨127, by trivial⟩
--- | A `Token` in a `Sequence` is a small integer.
--- RASP-L uses `Int8` to ensure all maps of type `Token` -> `Token` are learnable.
-
-def Token := UInt8 -- TODO do Int8
-def Sequence:= List Token
-def Keys := List Token
-def Values := List Token
-def Queries := List Token
-def Predicate := Token → Token → Bool
-
-def Selector := List (List Bool)
-def BoolSequence := List (Bool)
+inductive AggregationType where
+  | min
+  -- | mean
+  | max
 
 
-inductive AggType:= |min|mean|max
+def Array.join : Array (Array α) → Array α := .foldl .append .empty
+declare_syntax_cat compClause
+syntax "for " term " in " term : compClause
+syntax "if " term : compClause
 
--- | Performs a key-query-value lookup operation and aggregates over values.
---
--- Given a filler token, an aggregation type, two sequences (keys and queries),
--- and a predicate, it returns a processed sequence. It first selects elements
--- based on the predicate and then aggregates them.
---
--- Roughly matches the attention layer of a Transformer.
+syntax "[" term " | " compClause,* "]" : term
+syntax "#[" term " | " compClause,* "]" : term
+macro_rules
+  | `([$t:term |]) => `([$t])
+  | `([$t:term | for $x in $xs]) => `(List.map (λ $x => $t) $xs)
+  | `([$t:term | if $x]) => `(if $x then [$t] else [])
+  | `([$t:term | $c, $cs,*]) => `(List.join [[$t | $cs,*] | $c])
+
+macro_rules
+  | `(#[$t:term |]) => `(#[$t])
+  | `(#[$t:term | for $x in $xs]) => `(($xs).map (λ $x ↦ $t))
+  | `(#[$t:term | if $x]) => `(if $x then #[ $t ] else #[])
+  | `(#[$t:term | $c, $cs,*]) => `(Array.join #[#[$t | $cs,*] | $c ])
+
+
+#eval [(x, y) | for x in List.range 5, for y in List.range 5, if x + y <= 3]
+
+def List.prod (xs : List α) (ys : List β) : List (α × β) := [(x, y) | for x in xs, for y in ys]
+
+def Array.prod (xs : Array α) (ys : Array β) : Array (α × β) := #[ (x, y) | for x in xs, for y in ys ]
+
+
+#eval #[#[1],#[1,2]].join
+#eval #[x+1| for x in #[1,2,3]]
+#eval #[#[2],#[3]]|>.join
+-- #[2, 3, 4]
+#eval #[4 | if 1 < 0]
+-- #[]
+#eval #[4 | if 1 < 3]
+-- #[4]
+#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5, if x + y <= 3]
+-- #[(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (3, 0)]
+
+instance [Inhabited α] : Inhabited (Option α) where
+  default := none
+
+/--
+  Unwraps an option, returning the contained value if it is `some`, or a default value if it is `none`.
+-/
+def Option.unwrapOr [Inhabited α] (val: Option α) (default : α := Inhabited.default) : α :=
+  if let some v := val then v else default
+
+namespace List
+/-- Construct a new empty list. -/
+def empty: List a := []
+def sum [Add a][Inhabited a] (xs: List a): a := xs.foldr (· + · ) default
+
+def mean? (xs:  Sequence): Option Float :=
+  if xs.isEmpty then none
+  else some (xs.sum / xs.length)
+#eval [1,2,3,8].mean?
+
+def max! [Max a][Inhabited a] : List a → a := (·.maximum?.get!)
+def min! [Min a][Inhabited a] : List a → a := (·.minimum?.get!)
+def mean! [Add a][Inhabited a][HDiv a Nat a]: List a → a := (·.mean?.get!)
+#eval [2,5].mean!
+/--
+  Filters a list of values based on a list of booleans.
+-/
+def filterBy : List a -> List Bool -> List a
+| (x :: xs), (true :: bs) => x :: xs.filterBy bs
+| (_ :: xs), (false :: bs) => xs.filterBy bs
+| _, _ => []
+#eval [1,2,3].filterBy [true, false, true] = [1, 3]
+end List
+
+
+
+abbrev Aggregator := Selector -> Values -> Sequence
+
+
+-- theorem minMeanMaxTheorem (xs: List Nat) (h: xs.length > 0) : xs.min! ≤ xs.mean! ∧ xs.mean! ≤ xs.max!:=
+--   let filteredValues := values.filterBy mask
+--   let minVal := filteredValues.min?
+--   let meanVal := filteredValues.mean?
+--   let maxVal := filteredValues.max?
+
+--   minVal ≤ meanVal ∧ meanVal ≤ maxVal ∧ meanVal.isNat
+-- TODO restore mean
+
+/--
+  Finds the maximum value in a sequence.
+-/
+def aggrMaxByRow  (filler:Token) (values: Sequence ) (mask: BoolSequence): Token :=
+  (values.filterBy mask).maximum?.unwrapOr filler
+/--
+  Finds the minimum value in a sequence.
+-/
+def aggrMinByRow  (filler:Token) (values: Sequence ) (mask: BoolSequence): Token :=
+  (values.filterBy mask).minimum?.unwrapOr filler
+-- def aggrMeanByRow  (filler: Token) (values: Sequence) (mask: BoolSequence) : Token :=
+--   (values.filterBy mask).mean?.unwrapOr filler
+-- TODO replace Option with NonEmptyList
+/--
+  Creates an aggregator with a given aggregation type.
+-/
+def aggregate  (agg: AggregationType): Token -> Selector -> Values -> Sequence :=
+  match agg with
+    | .max => aggrMaxByRow
+    -- | .mean => aggrMeanByRow
+    | .min => aggrMinByRow
+
+  -- λ filler (bs:BoolSequence) v => (aggregator filler v).map bs
+  --   where
+  --     aggregator := match agg with
+  --       | .max => aggrMaxByRow
+  --       -- | .mean => aggrMeanByRow
+  --       | .min => aggrMinByRow
+
+/--
+  Non-causal selection is included for some reason.
+-/
+def selectAcausal : Keys -> Queries -> Predicate -> Selector :=
+  fun keys queries predicate =>
+    [ [predicate keyIndex queryIndex | for keyIndex in keys] | for queryIndex in queries]
+
+
+/--
+  Compares pairs of elements from sequences with a predicate subject to a causal constraint using list comprehension notation.
+-/
+def selectCausal (keys: Keys) (queries: Queries) (predicate: Predicate) : Selector :=
+  [ [ (keyIndex <= queryIndex) && predicate (keys.get! keyIndex) (queries.get! queryIndex)
+      | for keyIndex in [0:keys.length] ]
+    | for queryIndex in [0:queries.length] ]
+
+/--
+  Performs a key-query-value lookup operation and aggregates over values.
+
+  Given a filler token, an aggregation type, two sequences (keys and queries),
+  and a predicate, it returns a processed sequence. It first selects elements
+  based on the predicate and then aggregates them.
+
+  Roughly matches the attention layer of a Transformer.
+-/
 def kqv
-  -- | Filler token used in aggregation
+  -- Filler token used in aggregation
   (filler:Token)
-  -- | Type of aggregation (Min, Mean, Max)
+  -- Type of aggregation (Min, Mean, Max)
   (aggr:AggregationType)
-  -- | Sequence of keys
+  -- Sequence of keys
   (keys:Keys)
-  -- | Sequence of queries
+  -- Sequence of queries
   (queries:Queries)
-  -- | A boolean predicate that determines whether a key and query match
+  -- A boolean predicate that determines whether a key and query match
   (pred:Predicate)
-  -- | Sequence of values
+  -- Sequence of values
   (vals:Values)
-  -- | The output sequence
-  (out: Sequence):=
-  aggregate agg filler $ selectCausal keys queries predicate
+  -- The output sequence
+  Sequence :=
+  aggregate aggr filler (selectCausal keys queries predicate)
 
-
--- | Performs Key-Query-Value lookup with maximum aggregation of values.
+/--
+  Performs Key-Query-Value lookup with maximum aggregation of values.
+-/
 def maxKQV (k: Keys) (q: Queries) (p:Predicate)  (v:Values) : Sequence:=
-  kqv Int8.min Max
-
+  kqv Int8.min AggregationType.max k q p v
+#eval [0:3-1]
+#eval [1,2].minimum?
+/--
+  Performs Key-Query-Value lookup with minimum aggregation of values.
+-/
 def minKQV (k: Keys) (q: Queries) (p:Predicate)  (v:Values) : Sequence:=
-  kqv Int8.max Min
+  kqv Int8.max AggregationType.min k q p v
+
+#eval [0:3].toArray
+
+def Std.Range.foldr (r:Std.Range) (init : α) (f : Nat → α → α) : α :=
+  Id.run do
+    let mut result := init
+    for x in r do
+      result := f x result
+    return result
+
+-- TODO generalize Std.Range and put in PR
+-- def Std.Range.reverse (r:Std.Range) : Std.Range :=
+--   [r.stop: r.start: -1]
+
+def Std.Range.foldl (r:Std.Range) (init : α) (f : Nat → α → α) : α := r.foldr init f
+
+def Std.Range.sum (r:Std.Range) : Nat := r.foldr 0 .add
+#eval [0:7].sum
+def Std.Range.toArray (r:Std.Range): Array Nat := Id.run do
+  let mut result: Array Nat := #[]
+  for x in r do
+    result := result.push x
+  return result
 
 
-def select(k:Keys) (q:Queries)( pred:Predicate):= do
--- constructs a causal binary attention matrix
+instance : Coe Std.Range (Array Nat) where
+  coe := Std.Range.toArray
 
-let s := k.length
--- scilean array
-A = np.zeros((s, s), dtype=bool)
-for i in range(s):
-for j in range(i+1):
-A[i, j] = pred(k[j], q[i])
-return A
+instance : Coe Std.Range (List Nat) where
+  coe r := Id.run do
+    let mut result: List Nat := []
+    for x in r do
+      result := x :: result
+    return result
+def Std.Range.toList (r:Std.Range) : List Nat := r.toArray.toList
 
-
--- | Compareis pairs of elements from sequences with a predicate subject to a causal constraint.
+#eval [0:3].toList
+/--
+  Constructs a causal binary attention matrix based on the given keys, queries, and predicate.
+-/
 def selectCausal (keys: Keys)  (queries:Queries)  (predicate:Predicate) : Selector:=
-  [ [ (keyIndex <= queryIndex) && predicate (keys !! keyIndex) (queries !! queryIndex)
-      | keyIndex <- [0 .. length keys - 1]
+  [ [ (keyIndex <= queryIndex) && predicate (keys.get keyIndex) (queries.get! queryIndex)
+    | for keyIndex in [0:keys.length - 1]
     ]
-    | queryIndex <- [0 .. length queries - 1]
+    | for queryIndex in [0:queries.length - 1]
   ]
 
--- | Creates a matched-length constant sequence with the provided token.
-filledWith :: Sequence -> Token -> Sequence
+/--
+  Creates a matched-length constant sequence with the provided token.
+-/
+def filledWith : Sequence -> Token -> Sequence
 filledWith = replicate . length
 
--- | Extracts the indices of the elements in a sequence.
-indicesOf :: Sequence -> Sequence
-indicesOf x = [0 .. (fromIntegral (length x) - 1)]
+/--
+  Extracts the indices of the elements in a sequence.
+-/
+def indicesOf : Sequence -> Sequence
+indicesOf x := [0 .. (fromIntegral (length x) - 1)]
 
--- | Type alias for "fully-specified" aggregators that are ready to aggregate a sequence of values with a selector.
-type Aggregator = Selector -> Values -> Sequence
+/-
+  Type alias for "fully-specified" aggregators that are ready to aggregate a sequence of values with a selector.
+-/
 
--- | Aggregates values with some aggregation, filling in with a default token.
-aggregate :: AggregationType -> Token -> Aggregator
-aggregate Max = aggrMax
-aggregate Mean = aggrMean
-aggregate Min = aggrMin
 
-#eval [1].minimum?
-def aggregate :=
+-- FILEPATH: /Users/alokbeniwal/lean_raskell/LeanRaskell.lean
+#eval ([1, 4, 2, 10, 6].maximum?) = some 10
 
--- | Aggregates values by selecting the largest value.
-aggrMax :: Token -> Aggregator
-aggrMax filler a v = map (aggrMaxByRow filler v) a
+/-- TODO generalize to any additive monoid -/
 
--- | Aggregates values by taking the mean.
-aggrMean :: Token -> Aggregator
-aggrMean filler a v = map (aggrMeanByRow filler v) a
+#eval [1].maximum
+#eval List.maximum? [1,2,3]
+def List.maximum? : List Nat → Option Nat := (·.maximum)
+-- FILEPATH: /Users/alokbeniwal/lean_raskell/LeanRaskell.lean
+-- BEGIN: ed8c6549bwf9
 
--- | Aggregates values by selecting the smallest value.
-aggrMin :: Token -> Aggregator
-aggrMin filler a v = map (aggrMinByRow filler v) a
 
-aggrMaxByRow :: Token -> Sequence -> BoolSequence -> Token
-aggrMaxByRow filler v a = fromMaybe filler maybeMax
-  where
-    maybeMax = safeMaximum (filterByList a v)
 
-aggrMeanByRow :: Token -> Sequence -> BoolSequence -> Token
-aggrMeanByRow filler v a = fromMaybe filler maybeMean
-  where
-    maybeMean = safeInt8Mean (filterByList a v)
+/--
+  Computes the "width", or number of nonzero entries, of the rows of a `Selector`.
+-/
+-- def selWidth : Selector -> Sequence := map (sum . map fromBool)
+def selWidth (selector: Selector) : Sequence :=
+  selector.map fun row => row.map fun b => if b then 1 else 0 |>.sum
+/--
+  Converts a boolean value to a token.
+-/
+instance : Coe Bool Token where
+  coe
+    | false => 0
+    | true => 1
+/--
+  Applies an elementwise operation to a sequence of tokens.
+-/
+def tokMap : (Token -> Token) -> Sequence -> Sequence := map
 
-aggrMinByRow :: Token -> Sequence -> BoolSequence -> Token
-aggrMinByRow filler v a = fromMaybe filler maybeMin
-  where
-    maybeMin = safeMinimum (filterByList a v)
+/--
+  Applies an elementwise operation for pairs of tokens on a pair of sequences.
+-/
+def seqMap : (Token -> Token -> Token) -> Sequence -> Sequence -> Sequence := zipWith
 
-filterByList :: [Bool] -> [a] -> [a]
-filterByList (True : bs) (x : xs) = x : filterByList bs xs
-filterByList (False : bs) (_ : xs) = filterByList bs xs
-filterByList _ _ = []
 
-safeMaximum :: (Ord a) => [a] -> Maybe a
-safeMaximum [] = Nothing
-safeMaximum xs = Just (maximum xs)
+/--
+  Creates a sequence of the same length as the provided sequence filled with the provided token.
+-/
 
-safeMinimum :: (Ord a) => [a] -> Maybe a
-safeMinimum [] = Nothing
-safeMinimum xs = Just (minimum xs)
+def full := filledWith
 
-safeInt8Mean :: Sequence -> Maybe Token
-safeInt8Mean [] = Nothing
-safeInt8Mean xs = Just (sum xs `div` fromIntegral (length xs))
+/--
+  Extracts the indices of the elements in a sequence.
+-/
 
--- | Computes the "width", or number of nonzero entries, of the rows of a `Selector`.
-selWidth :: Selector -> Sequence
-selWidth = map (sum . map fromBool)
+def indices := indicesOf
 
-fromBool :: Bool -> Token
-fromBool True = 1
-fromBool _ = 0
 
--- | Applies an elementwise operation to a sequence of tokens.
---
--- Roughly matches the MLP layer in a Transformer. Alias for `map`.
-tokMap :: (Token -> Token) -> Sequence -> Sequence
-tokMap = map
+@[inherit_doc aggregate]
+def aggr := aggregate
 
--- | Applies an elementwise operation for pairs of tokens on a pair of sequences.
--- Alias for `zipWith`.
-seqMap :: (Token -> Token -> Token) -> Sequence -> Sequence -> Sequence
-seqMap = zipWith
 
--- | Creates a sequence of the same length as the provided sequence filled with the provided token.
--- Alias for `filledWith`.
-full :: Sequence -> Token -> Sequence
-full = filledWith
 
--- | Extracts the indices of the elements in a sequence.
--- Alias for `indicesOf`.
-indices :: Sequence -> Sequence
-indices = indicesOf
+#eval [(x, y) | for x in List.range 5, for y in List.range 5, if x + y <= 3]
 
--- | Creates an aggregator with a given aggregation type.
--- Alias for `aggregate`.
-aggr :: AggregationType -> Token -> Aggregator
-aggr = aggregate
-
--- | Produces a selector indicating which pairs of `Keys` and `Queries` match.
-select ::
-  -- | Whether to use causal selection
-  Bool ->
-  -- | A collection of `Keys` to check against `Queries`
+/--
+  Produces a selector indicating which pairs of `Keys` and `Queries` match.
+-/
+def select
+  -- Whether to use causal selection
+  (causal: Bool):
+  -- A collection of `Keys` to check against `Queries`
   Keys ->
-  -- | A collection of `Queries` to check against `Keys`
+  -- A collection of `Queries` to check against `Keys`
   Queries ->
-  -- | A boolean predicate that determines whether a key and query match
+  -- A boolean predicate that determines whether a key and query match
   Predicate ->
-  -- | A collection of boolean sequences indicating which pairs of `Keys` and `Queries` match
-  Selector
-select True = selectCausal
-select False = selectAcausal
+  -- A collection of boolean sequences indicating which pairs of `Keys` and `Queries` match
+  Selector:=
+    if causal then selectCausal else selectAcausal
 
--- | Non-causal selection is included for some reason.
-selectAcausal :: Keys -> Queries -> Predicate -> Selector
-selectAcausal keys queries predicate = [[predicate keyIndex queryIndex | keyIndex <- keys] | queryIndex <- queries]
+
+structure Place where
+  lat: Float
+  lon: Float
